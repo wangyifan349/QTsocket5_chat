@@ -1,77 +1,87 @@
-# QTsocket5 聊天应用
 
-这是一个使用 **PyQt5** 构建的简单聊天应用，使用 **cryptography** 库进行安全的消息传输。该应用实现了客户端与服务器之间的加密通信，使用 **X25519** 进行密钥交换，**AES-GCM** 进行消息加密，以及 **HKDF** 进行密钥派生。确保消息在客户端和服务器之间的机密性和完整性。
+# PyQt5  Chat Application
 
-## 特性
-- **安全消息传输**：使用 **AES-GCM** 进行加密，保证消息的机密性。
-- **客户端-服务器架构**：客户端通过 IP 和端口连接到服务器，服务器监听客户端的连接。
-- **图形用户界面**：使用 **PyQt5** 创建了简洁易用的聊天界面。
-- **颜色区分消息**：客户端发送的消息显示为 **金黄色**，服务器发送的消息显示为 **红色**，方便区分。
+[![Python Version](https://img.shields.io/badge/python-3.x-blue.svg)](https://python.org)
+[![PyQt5](https://img.shields.io/badge/PyQt5-latest-green.svg)](https://pypi.org/project/PyQt5/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## X25519 握手过程
+A secure chat application using PyQt5 with an intuitive graphical user interface, leveraging modern cryptographic practices to securely connect a client and a server.
 
-本应用使用 **X25519** 进行客户端和服务器之间的密钥交换。下面是该过程的简要描述：
+## Overview
 
-1. **客户端生成密钥对** → **服务器生成密钥对**
-2. **客户端发送公钥** → **服务器接收客户端的公钥**
-3. **服务器发送公钥** → **客户端接收服务器的公钥**
-4. **双方生成共享密钥** → **使用 AES-GCM 加密消息**
+This application provides a simple and secure way to chat between systems. It employs X25519 key exchange for secure key negotiation, and AES-GCM for data encryption, ensuring confidentiality and integrity in message exchange.
 
-### 握手过程示意图：
+## Features
 
+- **Dual Mode Operation**: Choose between Client or Server modes for communication.
+- **Secure Key Exchange**: Utilizes X25519 for efficient and secure key exchange.
+- **AES-GCM Encryption**: Ensures high security for messages with AES-GCM encryption.
+- **Resilient Connections**: Automatically attempts reconnection upon network disruption.
+- **User-Friendly GUI**: Built with PyQt5, offering a clean and responsive interface.
+- **Message Alignment**: Chat messages are visually distinct, aligning client messages left and server messages right.
 
-客户端 → \[公钥] → 服务器
-服务器 → \[公钥] → 客户端
-客户端 ↔ 服务器 → \[共享密钥]（使用 X25519 派生）
+## Getting Started
 
+Follow these instructions to set up and run the project on your local machine.
 
+### Prerequisites
 
-### 握手步骤：
-1. **生成密钥对**：客户端和服务器分别生成自己的 **X25519** 密钥对。
-2. **交换公钥**：客户端将自己的公钥发送给服务器，服务器收到后发送自己的公钥给客户端。
-3. **派生共享密钥**：客户端和服务器分别使用自己的私钥和对方的公钥来派生一个共享密钥。
-4. **加密消息**：使用 **AES-GCM** 对交换的消息进行加密，确保消息在传输过程中的安全。
+Ensure you have Python 3.x installed on your system. Required Python packages:
 
-## 安装步骤
+- [PyQt5](https://pypi.org/project/PyQt5/)
+- [cryptography](https://pypi.org/project/cryptography/)
 
-1. **克隆仓库**：
-    ```bash
-    git clone https://github.com/wangyifan349/QTsocket5_chat.git
-    cd QTsocket5_chat
-    ```
+Use pip to install the dependencies:
 
-2. **安装依赖**：
-    确保系统中已安装 Python，然后使用 `pip` 安装所需的依赖：
-    ```bash
-    pip install pyqt5 cryptography
-    ```
+```bash
+pip install PyQt5 cryptography
+```
 
-3. **运行应用**：
-    安装完依赖后，运行以下命令启动应用：
-    ```bash
-    python chat_app.py
-    ```
+### Installation
 
-4. **配置**：
-    - **客户端模式**：选择客户端并输入服务器的 IP 地址和端口进行连接。
-    - **服务器模式**：选择服务器模式并输入端口等待客户端连接。
+Clone the repository:
 
-## 许可证
+```bash
+git clone https://github.com/wangyifan349/QTsocket5_chat.git
+cd QTsocket5_chat
+```
 
-本项目使用 **MIT 许可证**。详细信息请查看 [LICENSE](LICENSE) 文件。
+### Running the Application
 
-## MIT 许可证
+Launch the application with Python:
 
-MIT 许可证
+```bash
+python chat_app.py
+```
 
-版权所有 (c) 
+### Usage
 
-特此免费授予任何获得此软件副本及相关文档文件（以下简称“软件”）的人，允许在软件的所有用途下使用、复制、修改、合并、发布、分发、再许可及/或销售软件的副本，并允许向软件提供者交付此软件的人这样做，但须符合以下条件：
+1. **Configuration**:
+   - **Mode Selection**: Choose Client or Server mode.
+   - **Enter Connection Details**: Input the IP address and port number.
 
-- 上述版权声明和本许可声明必须包含在软件的所有副本或重要部分中。
-- 软件按“原样”提供，且不附带任何明示或暗示的担保，包括但不限于对适销性、特定用途适用性和非侵权的担保。
+2. **Initiate Chat**:
+   - Click "Start" to initialize the connection.
+   - Use the text input field to send messages.
 
-**免责声明**：本软件仅供技术研究使用，作者或版权持有者不对因使用本软件所产生的任何后果或损害承担责任。无论是直接、间接、偶然、特殊、惩罚性或其他形式的损害（包括但不限于数据丢失、利润损失等），均不予考虑。
+## Contributing
 
-在任何情况下，作者或版权持有者均不对因软件或软件的使用、修改或分发所产生的任何形式的索赔、损害或其他责任承担责任，无论是合同诉讼、侵权行为或其他形式的责任。
+We welcome contributions! Please fork the repository and submit a pull request for any enhancements or bug fixes.
+
+## License
+
+This project is licensed under the terms of the MIT License. You are free to use, modify, and distribute this software under the terms of this license. See the [LICENSE](LICENSE) file for more details.
+
+## Acknowledgements
+
+- [PyQt5](https://riverbankcomputing.com/software/pyqt/intro) for the GUI framework.
+- [Cryptography Library](https://cryptography.io/) for secure encryption functions.
+
+## Contact
+
+Feel free to reach out for any inquiries or issues through the repository's issue tracker.
+
+---
+
+Thank you for checking out this project! We hope you find it useful and informative.
 
