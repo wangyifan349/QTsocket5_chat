@@ -1,100 +1,71 @@
+# QTsocket5 聊天应用
 
-# QTsocket5 Chat
+这是一个使用 **PyQt5** 构建的简单聊天应用，使用 **cryptography** 库进行安全的消息传输。该应用实现了客户端与服务器之间的加密通信，使用 **X25519** 进行密钥交换，**AES-GCM** 进行消息加密，以及 **HKDF** 进行密钥派生。确保消息在客户端和服务器之间的机密性和完整性。
 
-This is a simple chat application built using **PyQt5** for the GUI and **cryptography** for secure communication. The application implements encrypted messaging between a client and a server using **X25519** for key exchange, **AES-GCM** for encryption, and **HKDF** for key derivation. This ensures that messages are exchanged securely, maintaining confidentiality and integrity.
+## 特性
+- **安全消息传输**：使用 **AES-GCM** 进行加密，保证消息的机密性。
+- **客户端-服务器架构**：客户端通过 IP 和端口连接到服务器，服务器监听客户端的连接。
+- **图形用户界面**：使用 **PyQt5** 创建了简洁易用的聊天界面。
+- **颜色区分消息**：客户端发送的消息显示为 **金黄色**，服务器发送的消息显示为 **红色**，方便区分。
 
-## Features
-- **Secure Messaging**: 
-    - Encryption of messages using **AES-GCM** for confidentiality.
-    - Key exchange using **X25519** to establish a shared key between client and server.
-    - **HKDF** (HMAC-based Key Derivation Function) is used to derive the final encryption key from the shared secret.
-- **Client-Server Architecture**: 
-    - The client connects to a server via IP and port to send and receive encrypted messages.
-    - The server listens for incoming client connections and handles the communication securely.
-- **Graphical User Interface**: 
-    - The application uses **PyQt5** to create a simple and user-friendly interface for chatting.
-    - The client and server messages are displayed in a clean, easy-to-read format.
-- **Color-Coded Messages**: 
-    - Messages from the client are displayed in **gold**.
-    - Messages from the server are displayed in **red**, making it easier to distinguish between the two.
+## X25519 握手过程
 
-## X25519 Handshake Process
+本应用使用 **X25519** 进行客户端和服务器之间的密钥交换。下面是该过程的简要描述：
 
-The chat application uses **X25519** for secure key exchange between the client and server. Here's a simplified description of how the handshake works:
+1. **客户端生成密钥对** → **服务器生成密钥对**
+2. **客户端发送公钥** → **服务器接收客户端的公钥**
+3. **服务器发送公钥** → **客户端接收服务器的公钥**
+4. **双方生成共享密钥** → **使用 AES-GCM 加密消息**
 
-1. **Client generates key pair** → **Server generates key pair**
-2. **Client sends public key** → **Server receives client's public key**
-3. **Server sends its own public key** → **Client receives server's public key**
-4. **Both client and server generate a shared key** → **Messages are encrypted using AES-GCM**
+### 握手过程示意图：
 
-### Handshake Process Representation:
-```
 
-Client → \[Public Key] → Server
-Server → \[Public Key] → Client
-Client ↔ Server → \[Shared Key] (Derived using X25519)
+客户端 → \[公钥] → 服务器
+服务器 → \[公钥] → 客户端
+客户端 ↔ 服务器 → \[共享密钥]（使用 X25519 派生）
 
-````
 
-- **Step 1**: The client and server both generate their own **X25519** key pairs.
-- **Step 2**: The client sends its public key to the server.
-- **Step 3**: The server sends its public key back to the client.
-- **Step 4**: Both the client and server use their own private key and the received public key to derive a **shared key**.
-- **Step 5**: Once the shared key is derived, both parties can securely encrypt and decrypt messages using **AES-GCM**.
 
-This process ensures that only the client and server can decrypt the messages exchanged between them.
+### 握手步骤：
+1. **生成密钥对**：客户端和服务器分别生成自己的 **X25519** 密钥对。
+2. **交换公钥**：客户端将自己的公钥发送给服务器，服务器收到后发送自己的公钥给客户端。
+3. **派生共享密钥**：客户端和服务器分别使用自己的私钥和对方的公钥来派生一个共享密钥。
+4. **加密消息**：使用 **AES-GCM** 对交换的消息进行加密，确保消息在传输过程中的安全。
 
-## Installation
+## 安装步骤
 
-To set up and run this chat application on your local machine, follow these steps:
-
-1. **Clone the repository**:
+1. **克隆仓库**：
     ```bash
     git clone https://github.com/wangyifan349/QTsocket5_chat.git
     cd QTsocket5_chat
     ```
 
-2. **Install the required dependencies**:
-    Ensure you have Python installed on your system, then install the necessary dependencies using `pip`:
+2. **安装依赖**：
+    确保系统中已安装 Python，然后使用 `pip` 安装所需的依赖：
     ```bash
     pip install pyqt5 cryptography
     ```
 
-3. **Run the application**:
-    After installing the dependencies, you can run the application with the following command:
+3. **运行应用**：
+    安装完依赖后，运行以下命令启动应用：
     ```bash
     python chat_app.py
     ```
 
-4. **Configuration**:
-    - **Client**: Choose this mode to connect to a server. Enter the server's IP address and port to initiate the connection.
-    - **Server**: Choose this mode to set up a server. The server will listen for incoming client connections on the specified port.
+4. **配置**：
+    - **客户端模式**：选择客户端并输入服务器的 IP 地址和端口进行连接。
+    - **服务器模式**：选择服务器模式并输入端口等待客户端连接。
 
-## License
+## 许可证
 
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+本项目使用 **MIT 许可证**。详细信息请查看 [LICENSE](LICENSE) 文件。
 
-## License Text
+## MIT 许可证文本
+MIT 许可证
+版权所有 (c) 2023 [您的名字]
 
-MIT License
+特此免费授予任何获得此软件副本及相关文档文件（以下简称“软件”）的人，允许在软件的所有用途下使用、复制、修改、合并、发布、分发、再许可及/或销售软件的副本，并允许向软件提供者交付此软件的人这样做，但须符合以下条件：
 
-Copyright (c) 2023 [Your Name]
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-IN THE SOFTWARE.
-
+以上版权声明和本许可声明应包含在软件的所有副本或重要部分中。
+软件是按“原样”提供的，没有任何明示或暗示的担保，包括但不限于对适销性、适用于特定用途和非侵权的担保。
+在任何情况下，作者或版权持有者均不对因软件或软件的使用或其他交易所产生的任何索赔、损害或其他责任承担责任，无论是合同诉讼、侵权或其他方式。
