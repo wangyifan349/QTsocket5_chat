@@ -3,31 +3,26 @@ import threading
 import struct
 import os
 import sys
-
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
-
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
-
 # -------------------------------------------------------------------------
-# 通用数据收发辅助函数
+# General helper functions for sending and receiving data
 # -------------------------------------------------------------------------
-
 def send_msg(sock: socket.socket, data: bytes):
     """
-    发送数据前先发送4字节长度，再发送数据本体，防止粘包
+    Before sending data, send 4 bytes of length info, followed by the data itself to prevent packet sticking.
     """
     try:
         sock.sendall(struct.pack('!I', len(data)))
         sock.sendall(data)
     except Exception as e:
         print(f"[send_msg] Exception: {e}")
-
 def recvall(sock: socket.socket, n: int):
     """
-    接收n字节数据，确保接收完整，不足或连接关闭返回None
+    Receive n bytes of data, ensuring complete reception. Returns None if insufficient data is received or the connection is closed.
     """
     data = b''
     while len(data) < n:
@@ -43,7 +38,7 @@ def recvall(sock: socket.socket, n: int):
 
 def recv_msg(sock: socket.socket):
     """
-    先接收4字节数据长度，再接收对应长度的消息内容
+    First receive 4 bytes indicating the length, then receive the corresponding bytes as the message.
     """
     try:
         raw_len = recvall(sock, 4)
@@ -54,18 +49,15 @@ def recv_msg(sock: socket.socket):
     except Exception as e:
         print(f"[recv_msg] Exception: {e}")
         return None
-
 # -------------------------------------------------------------------------
-# AES-GCM 加密 / 解密，使用 PyCryptodome
-# 数据格式为：nonce(12 bytes) + tag(16 bytes) + 密文
+# AES-GCM encryption / decryption using PyCryptodome
+# Data format: nonce (12 bytes) + tag (16 bytes) + ciphertext
 # -------------------------------------------------------------------------
-
 def aes_gcm_encrypt(key: bytes, plaintext: bytes) -> bytes:
-    nonce = get_random_bytes(12)  # GCM推荐12字节随机数
+    nonce = get_random_bytes(12)  # GCM recommends a 12 byte random nonce
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(plaintext)
     return nonce + tag + ciphertext
-
 def aes_gcm_decrypt(key: bytes, data: bytes) -> bytes or None:
     try:
         nonce = data[:12]
@@ -75,16 +67,14 @@ def aes_gcm_decrypt(key: bytes, data: bytes) -> bytes or None:
         plaintext = cipher.decrypt_and_verify(ciphertext, tag)
         return plaintext
     except ValueError as e:
-        print(f"[aes_gcm_decrypt] 认证失败或数据异常: {e}")
+        print(f"[aes_gcm_decrypt] Authentication failed or data error: {e}")
         return None
     except Exception as e:
-        print(f"[aes_gcm_decrypt] 异常: {e}")
+        print(f"[aes_gcm_decrypt] Exception: {e}")
         return None
-
 # -------------------------------------------------------------------------
-# 使用 X25519 生成共享密钥并用 HKDF 派生 AES 密钥
+# Generate shared key using X25519 and derive the AES key with HKDF
 # -------------------------------------------------------------------------
-
 def derive_aes_key(shared_key: bytes, length=32) -> bytes:
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
@@ -93,11 +83,9 @@ def derive_aes_key(shared_key: bytes, length=32) -> bytes:
         info=b'handshake data',
     )
     return hkdf.derive(shared_key)
-
 # -------------------------------------------------------------------------
-# 线程基类和发送/接收线程实现，确保线程安全和异常处理
+# Base thread class and implementations for sending/receiving threads, ensuring thread safety and exception handling
 # -------------------------------------------------------------------------
-
 class SafeSocketThread(threading.Thread):
     def __init__(self, sock, aes_key, role=""):
         super().__init__()
@@ -114,135 +102,114 @@ class SafeSocketThread(threading.Thread):
             self.sock.close()
         except:
             pass
-
 class Receiver(SafeSocketThread):
     def run(self):
         while self.running:
             data = recv_msg(self.sock)
             if data is None:
-                print(f"[{self.role}] 连接关闭或接收失败，退出接收线程")
+                print(f"[{self.role}] Connection closed or reception failed, exiting receiver thread")
                 break
             plaintext = aes_gcm_decrypt(self.aes_key, data)
             if plaintext is not None:
-                print(f"[{self.role} 接收]: {plaintext.decode(errors='ignore')}")
+                print(f"[{self.role} Receive]: {plaintext.decode(errors='ignore')}")
         self.stop()
-
 class Sender(SafeSocketThread):
     def run(self):
         while self.running:
             try:
                 text = input()
                 if text.lower() == "exit":
-                    print(f"[{self.role}] 用户请求退出，关闭发送线程")
+                    print(f"[{self.role}] User requested exit, closing sender thread")
                     self.stop()
                     break
                 encrypted = aes_gcm_encrypt(self.aes_key, text.encode())
                 send_msg(self.sock, encrypted)
             except Exception as e:
-                print(f"[{self.role} 发送异常: {e}，退出发送线程")
+                print(f"[{self.role} Send Exception: {e}, exiting sender thread")
                 self.stop()
                 break
-
 # -------------------------------------------------------------------------
-# TCP服务端实现
+# TCP Server Implementation
 # -------------------------------------------------------------------------
-
 def server(host='127.0.0.1', port=65432):
-    print("[服务器] 启动...")
+    print("[Server] Starting...")
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((host, port))
     listener.listen(1)
-    print(f"[服务器] 监听 {host}:{port}")
-
+    print(f"[Server] Listening on {host}:{port}")
     try:
         conn, addr = listener.accept()
-        print(f"[服务器] 建立连接 - 来自 {addr}")
-
-        # 生成服务端X25519密钥对，先发送公钥给客户端
+        print(f"[Server] Connection established - from {addr}")
+        # Generate server's X25519 key pair, first send public key to the client
         server_priv = x25519.X25519PrivateKey.generate()
         server_pub = server_priv.public_key()
         send_msg(conn, server_pub.public_bytes())
-
-        # 接收客户端公钥
+        # Receive client's public key
         client_pub_raw = recv_msg(conn)
         if client_pub_raw is None:
-            print("[服务器] 未收到客户端公钥，断开连接")
+            print("[Server] Did not receive client's public key, disconnecting")
             conn.close()
             return
         client_pub = x25519.X25519PublicKey.from_public_bytes(client_pub_raw)
-
-        # 计算共享密钥并派生AES对称密钥
+        # Compute shared key and derive AES symmetric key
         shared_key = server_priv.exchange(client_pub)
         aes_key = derive_aes_key(shared_key)
-        print("[服务器] AES共享密钥协商完成")
-
-        # 创建发送和接收线程，保证异步通信
-        receiver = Receiver(conn, aes_key, role="服务器")
-        sender = Sender(conn, aes_key, role="服务器")
+        print("[Server] AES shared key agreement complete")
+        # Create sender and receiver threads for asynchronous communication
+        receiver = Receiver(conn, aes_key, role="Server")
+        sender = Sender(conn, aes_key, role="Server")
         receiver.start()
         sender.start()
-
-        receiver.join()  # 等待接收线程退出
-        sender.running = False  # 告知发送线程退出（通常用户输入exit结束）
-
+        receiver.join()  # Wait for the receiver thread to exit
+        sender.running = False  # Inform the sender thread to exit (usually terminated by user input "exit")
     except Exception as e:
-        print(f"[服务器] 异常: {e}")
+        print(f"[Server] Exception: {e}")
     finally:
         listener.close()
-        print("[服务器] 已关闭")
-
+        print("[Server] Closed")
 # -------------------------------------------------------------------------
-# TCP客户端实现
+# TCP Client Implementation
 # -------------------------------------------------------------------------
-
 def client(host='127.0.0.1', port=65432):
-    print("[客户端] 启动...")
+    print("[Client] Starting...")
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((host, port))
-        print("[客户端] 连接服务器成功")
-
-        # 接收服务器公钥
+        print("[Client] Connected to server successfully")
+        # Receive server's public key
         server_pub_raw = recv_msg(sock)
         if server_pub_raw is None:
-            print("[客户端] 未收到服务器公钥，关闭连接")
+            print("[Client] Did not receive server's public key, closing connection")
             sock.close()
             return
         server_pub = x25519.X25519PublicKey.from_public_bytes(server_pub_raw)
-
-        # 生成客户端X25519密钥对，发送公钥
+        # Generate client's X25519 key pair and send public key
         client_priv = x25519.X25519PrivateKey.generate()
         client_pub = client_priv.public_key()
         send_msg(sock, client_pub.public_bytes())
-
-        # 计算共享密钥并派生AES密钥
+        # Compute shared key and derive AES key
         shared_key = client_priv.exchange(server_pub)
         aes_key = derive_aes_key(shared_key)
-        print("[客户端] AES共享密钥协商完成")
-
-        # 启动发送和接收线程
-        receiver = Receiver(sock, aes_key, role="客户端")
-        sender = Sender(sock, aes_key, role="客户端")
+        print("[Client] AES shared key agreement complete")
+        # Start sender and receiver threads
+        receiver = Receiver(sock, aes_key, role="Client")
+        sender = Sender(sock, aes_key, role="Client")
         receiver.start()
         sender.start()
-
         receiver.join()
         sender.running = False
-
     except Exception as e:
-        print(f"[客户端] 异常: {e}")
+        print(f"[Client] Exception: {e}")
     finally:
         sock.close()
-        print("[客户端] 已关闭连接")
-
+        print("[Client] Connection closed")
 # -------------------------------------------------------------------------
-# 主程序入口，根据命令行参数启动服务器或客户端
+# Main entry point, start server or client based on command line parameters
 # -------------------------------------------------------------------------
-
 if __name__ == '__main__':
     if len(sys.argv) != 2 or sys.argv[1] not in ('server', 'client'):
-        print(f"用法: python {sys.argv[0]} server|client")
+        print(f"Usage: python {sys.argv[0]} server|client")
         sys.exit(1)
 
     if sys.argv[1] == 'server':
