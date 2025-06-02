@@ -1,6 +1,10 @@
-────────────────────────────  
-server.py  
-────────────────────────────
+#This version has not been fully tested.
+
+
+
+
+server.py
+
 #!/usr/bin/env python3
 import socket
 import threading
@@ -8,14 +12,12 @@ import struct
 import os
 import json
 import time
-
 from Crypto.Cipher import AES
 from Crypto.Hash import HMAC, SHA256
 from nacl.public import PrivateKey, PublicKey
 from nacl.exceptions import CryptoError
-
 # ------------------------------
-# 简单的 HKDF 派生函数，用于从共享密钥中导出 AES 密钥
+# Simple HKDF derivation function for deriving an AES key from the shared secret
 # ------------------------------
 def hkdf_derive(key_material, salt=b"handshake salt", info=b"AES key"):
     h = HMAC.new(salt, digestmod=SHA256)
@@ -23,16 +25,16 @@ def hkdf_derive(key_material, salt=b"handshake salt", info=b"AES key"):
     prk = h.digest()  # pseudorandom key
     h2 = HMAC.new(prk, digestmod=SHA256)
     h2.update(info + b"\x01")
-    return h2.digest()  # 输出 32 字节密钥
+    return h2.digest()  # outputs a 32-byte key
 # ------------------------------
-# 将数据打包：先传输4字节长度，再传输 JSON 数据
+# Package data: send 4 bytes of length followed by JSON data
 # ------------------------------
 def send_packet(conn, data: str):
     encoded = data.encode()
     packet_length = struct.pack(">I", len(encoded))
     conn.sendall(packet_length + encoded)
 # ------------------------------
-# 接收完整数据包（先接收4字节长度，再收到对应数据）
+# Receive a complete data packet (first receive 4 bytes of length, then the corresponding data)
 # ------------------------------
 def recv_packet(conn):
     header = recv_all(conn, 4)
@@ -56,49 +58,49 @@ def recv_all(conn, n):
         data += packet
     return data
 # ------------------------------
-# 全局变量：AES 密钥，用于加解密
+# Global variable: AES key for encryption and decryption
 # ------------------------------
 aes_key = None
 # ------------------------------
-# 握手过程：使用 X25519 进行密钥交换，并通过 HKDF 派生 AES 密钥
+# Handshake process: using X25519 for key exchange and HKDF for AES key derivation
 # ------------------------------
 def handshake(conn, is_server=True):
     global aes_key
     try:
-        # 生成 X25519 密钥对（使用 PyNaCl 实现）
+        # Generate X25519 key pair (using PyNaCl)
         my_private = PrivateKey.generate()
         my_public = my_private.public_key
-        # 公钥交换流程
+        # Public key exchange process
         if is_server:
-            # 服务器等待客户端发送公钥，再发送自己的公钥
+            # Server waits for client to send its public key, then sends its own public key
             peer_pub_json = recv_packet(conn)
             if peer_pub_json is None:
-                raise RuntimeError("未收到客户端公钥")
+                raise RuntimeError("Did not receive client's public key")
             peer_pub = json.loads(peer_pub_json)["pub"]
             send_packet(conn, json.dumps({"pub": my_public.encode().hex()}))
         else:
-            # 客户端先发送公钥，再等待服务器回复
+            # Client sends its public key first, then waits for server's reply
             send_packet(conn, json.dumps({"pub": my_public.encode().hex()}))
             peer_pub_json = recv_packet(conn)
             if peer_pub_json is None:
-                raise RuntimeError("未收到服务器公钥")
+                raise RuntimeError("Did not receive server's public key")
             peer_pub = json.loads(peer_pub_json)["pub"]
-        # 将对方公钥转换成 PublicKey 对象
+        # Convert the peer's public key into a PublicKey object
         peer_public = PublicKey(bytes.fromhex(peer_pub))
-        # 计算共享密钥
+        # Compute shared key
         shared = my_private.exchange(peer_public)
         aes_key = hkdf_derive(shared)
-        print("[握手成功] 共享 AES key：", aes_key.hex())
+        print("[Handshake Success] Shared AES key:", aes_key.hex())
         return True
     except Exception as e:
-        print("[握手异常]:", e)
+        print("[Handshake Exception]:", e)
         return False
 # ------------------------------
-# 加密消息，返回 JSON 格式字符串
-# JSON 中包括 nonce、tag、ciphertext(均转16进制字符串)
+# Encrypt a message and return a JSON formatted string
+# The JSON includes nonce, tag, and ciphertext (all converted to hex strings)
 # ------------------------------
 def encrypt_message(plaintext: bytes) -> str:
-    # 生成随机 nonce（12 字节）用于 AES-GCM
+    # Generate a random nonce (12 bytes) for AES-GCM
     nonce = os.urandom(12)
     cipher = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(plaintext)
@@ -109,7 +111,7 @@ def encrypt_message(plaintext: bytes) -> str:
     }
     return json.dumps(payload)
 # ------------------------------
-# 解密 JSON 格式数据，返回明文 bytes
+# Decrypt JSON formatted data and return plaintext bytes
 # ------------------------------
 def decrypt_message(json_data: str) -> bytes:
     try:
@@ -121,9 +123,9 @@ def decrypt_message(json_data: str) -> bytes:
         plaintext = cipher.decrypt_and_verify(ciphertext, tag)
         return plaintext
     except (ValueError, KeyError, CryptoError) as e:
-        raise ValueError("解密或数据格式错误: " + str(e))
+        raise ValueError("Decryption or data format error: " + str(e))
 # ------------------------------
-# 发送线程：循环读取用户输入进行加密并发送
+# Sending thread: continuously reads user input, encrypts it, and sends it
 # ------------------------------
 def send_thread(conn):
     while True:
@@ -131,31 +133,31 @@ def send_thread(conn):
             msg = input()
             if not msg:
                 continue
-            # 加密消息
+            # Encrypt the message
             encrypted_json = encrypt_message(msg.encode())
             send_packet(conn, encrypted_json)
         except Exception as e:
-            print("[发送异常]:", e)
+            print("[Send Exception]:", e)
             break
 # ------------------------------
-# 接收线程：循环接收数据包，解密后打印消息
+# Receiving thread: continuously receives data packets, decrypts them, and prints messages
 # ------------------------------
 def recv_thread(conn):
     while True:
         try:
             data_json = recv_packet(conn)
             if data_json is None:
-                print("[连接断开] 尝试重连...")
+                print("[Connection closed] Attempting to reconnect...")
                 break
             plaintext = decrypt_message(data_json)
-            print("\n[收到]:", plaintext.decode())
+            print("\n[Received]:", plaintext.decode())
         except (ValueError, CryptoError) as e:
-            print("[解密错误]:", e)
+            print("[Decryption Error]:", e)
         except Exception as e:
-            print("[接收异常]:", e)
+            print("[Receive Exception]:", e)
             break
 # ------------------------------
-# 主函数：监听连接，遇断线则重连（重新握手）
+# Main function: listen for connections, and reconnect (performing handshake) if disconnected
 # ------------------------------
 def main():
     host = "0.0.0.0"
@@ -164,26 +166,26 @@ def main():
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_sock.bind((host, port))
     server_sock.listen(1)
-    print("[服务器启动] 等待连接...")
+    print("[Server Started] Waiting for connections...")
     while True:
         try:
             conn, addr = server_sock.accept()
-            print("[连接建立] 来自：", addr)
+            print("[Connection Established] From:", addr)
             if not handshake(conn, is_server=True):
                 conn.close()
                 continue
-            # 同时启用发送和接收线程
+            # Start both sending and receiving threads
             t_send = threading.Thread(target=send_thread, args=(conn,))
             t_recv = threading.Thread(target=recv_thread, args=(conn,))
             t_send.start()
             t_recv.start()
             t_send.join()
             t_recv.join()
-            print("[会话结束] 断开连接，等待重连...")
+            print("[Session Ended] Connection closed, waiting for reconnection...")
             conn.close()
         except Exception as e:
-            print("[主循环异常]:", e)
-        # 间隔后继续等待新的连接
+            print("[Main Loop Exception]:", e)
+        # Wait a bit before trying for a new connection
         time.sleep(2)
 if __name__ == "__main__":
     main()
@@ -193,13 +195,9 @@ if __name__ == "__main__":
 
 
 
+client.py
 
 
-
-
-────────────────────────────  
-client.py  
-────────────────────────────
 #!/usr/bin/env python3
 import socket
 import threading
@@ -212,7 +210,7 @@ from Crypto.Hash import HMAC, SHA256
 from nacl.public import PrivateKey, PublicKey
 from nacl.exceptions import CryptoError
 # ------------------------------
-# 使用 HKDF 派生 AES 密钥
+# Use HKDF to derive the AES key from key material
 # ------------------------------
 def hkdf_derive(key_material, salt=b"handshake salt", info=b"AES key"):
     h = HMAC.new(salt, digestmod=SHA256)
@@ -222,14 +220,14 @@ def hkdf_derive(key_material, salt=b"handshake salt", info=b"AES key"):
     h2.update(info + b"\x01")
     return h2.digest()
 # ------------------------------
-# 将数据打包：先传4字节长度，再发送 JSON 数据
+# Package data: send 4 bytes of length followed by JSON data
 # ------------------------------
 def send_packet(conn, data: str):
     encoded = data.encode()
     packet_length = struct.pack(">I", len(encoded))
     conn.sendall(packet_length + encoded)
 # ------------------------------
-# 接收数据包（先接收长度，再接收 JSON 数据）
+# Receive a data packet (first receive length, then JSON data)
 # ------------------------------
 def recv_packet(conn):
     header = recv_all(conn, 4)
@@ -253,11 +251,11 @@ def recv_all(conn, n):
         data += packet
     return data
 # ------------------------------
-# 全局变量：AES 密钥
+# Global variable: AES key
 # ------------------------------
 aes_key = None
 # ------------------------------
-# 握手过程：使用 X25519 完成密钥交换及 AES 密钥派生
+# Handshake process: use X25519 for key exchange and derive the AES key
 # ------------------------------
 def handshake(conn, is_server=False):
     global aes_key
@@ -265,30 +263,29 @@ def handshake(conn, is_server=False):
         my_private = PrivateKey.generate()
         my_public = my_private.public_key
         if is_server:
-            # 服务器模式
+            # Server mode
             peer_pub_json = recv_packet(conn)
             if peer_pub_json is None:
-                raise RuntimeError("未收到对方公钥")
+                raise RuntimeError("Did not receive peer's public key")
             peer_pub = json.loads(peer_pub_json)["pub"]
             send_packet(conn, json.dumps({"pub": my_public.encode().hex()}))
         else:
-            # 客户端模式先发送公钥，再等待回复
+            # Client mode: send public key first and then wait for reply
             send_packet(conn, json.dumps({"pub": my_public.encode().hex()}))
             peer_pub_json = recv_packet(conn)
             if peer_pub_json is None:
-                raise RuntimeError("未收到对方公钥")
+                raise RuntimeError("Did not receive peer's public key")
             peer_pub = json.loads(peer_pub_json)["pub"]
         peer_public = PublicKey(bytes.fromhex(peer_pub))
         shared = my_private.exchange(peer_public)
         aes_key = hkdf_derive(shared)
-        print("[握手成功] 共享 AES key：", aes_key.hex())
+        print("[Handshake Success] Shared AES key:", aes_key.hex())
         return True
     except Exception as e:
-        print("[握手异常]:", e)
+        print("[Handshake Exception]:", e)
         return False
-
 # ------------------------------
-# 加密消息：使用 AES-GCM 加密后构造 JSON 对象（nonce, tag, ciphertext均为16进制）
+# Encrypt a message: use AES-GCM and then construct a JSON object (nonce, tag, ciphertext as hex strings)
 # ------------------------------
 def encrypt_message(plaintext: bytes) -> str:
     nonce = os.urandom(12)
@@ -301,7 +298,7 @@ def encrypt_message(plaintext: bytes) -> str:
     }
     return json.dumps(payload)
 # ------------------------------
-# 解密函数：解析 JSON 格式消息并解密
+# Decrypt function: parse the JSON formatted message and decrypt it
 # ------------------------------
 def decrypt_message(json_data: str) -> bytes:
     try:
@@ -313,9 +310,9 @@ def decrypt_message(json_data: str) -> bytes:
         plaintext = cipher.decrypt_and_verify(ciphertext, tag)
         return plaintext
     except (ValueError, KeyError, CryptoError) as e:
-        raise ValueError("解密或数据格式错误: " + str(e))
+        raise ValueError("Decryption or data format error: " + str(e))
 # ------------------------------
-# 发送线程：循环等待用户输入，若网络异常则尝试退出线程
+# Sending thread: continuously wait for user input; exit thread upon network error
 # ------------------------------
 def send_thread(conn):
     while True:
@@ -326,42 +323,42 @@ def send_thread(conn):
             encrypted_json = encrypt_message(msg.encode())
             send_packet(conn, encrypted_json)
         except Exception as e:
-            print("[发送异常]:", e)
+            print("[Send Exception]:", e)
             break
 # ------------------------------
-# 接收线程：循环接收数据，异常中断时退出
+# Receiving thread: continuously receive data; exit on exception
 # ------------------------------
 def recv_thread(conn):
     while True:
         try:
             data_json = recv_packet(conn)
             if data_json is None:
-                print("[连接断开] 尝试重连...")
+                print("[Connection closed] Attempting to reconnect...")
                 break
             plaintext = decrypt_message(data_json)
-            print("\n[收到]:", plaintext.decode())
+            print("\n[Received]:", plaintext.decode())
         except (ValueError, CryptoError) as e:
-            print("[解密错误]:", e)
+            print("[Decryption Error]:", e)
         except Exception as e:
-            print("[接收异常]:", e)
+            print("[Receive Exception]:", e)
             break
 # ------------------------------
-# 客户端主循环：建立连接，并在连接断开时尝试自动重连
+# Main client loop: establish connection and automatically reconnect if disconnected
 # ------------------------------
 def main():
-    host = "127.0.0.1"  # 修改为服务器地址
+    host = "127.0.0.1"  # Change to the server address if needed
     port = 9999
     while True:
         try:
             conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            print("[连接中] 尝试连接到 {}:{}".format(host, port))
+            print("[Connecting] Attempting to connect to {}:{}".format(host, port))
             conn.connect((host, port))
-            print("[连接成功] 与服务器建立连接")
+            print("[Connected] Established connection with the server")
             if not handshake(conn, is_server=False):
                 conn.close()
                 time.sleep(2)
                 continue
-            # 启动发送与接收线程
+            # Start sending and receiving threads
             t_send = threading.Thread(target=send_thread, args=(conn,))
             t_recv = threading.Thread(target=recv_thread, args=(conn,))
             t_send.start()
@@ -369,10 +366,11 @@ def main():
             t_send.join()
             t_recv.join()
             conn.close()
-            print("[会话结束] 断开连接，等待重连...")
+            print("[Session Ended] Connection closed, waiting for reconnection...")
         except Exception as e:
-            print("[连接异常]:", e)
-        # 断线后延迟后重连
+            print("[Connection Exception]:", e)
+        # Wait before reconnecting after disconnection
         time.sleep(2)
 if __name__ == "__main__":
     main()
+
