@@ -225,3 +225,393 @@ def main():
         sys.exit(0)
 if __name__ == "__main__":
     main()
+
+
+
+
+
+"""
+The code below uses a Tkinter wrapper for the interface.
+
+The code above does not have a user interface.
+"""
+
+
+
+
+#!/usr/bin/env python3
+import socket
+import threading
+import time
+import sys
+import struct
+import json
+import queue
+import tkinter as tk
+from tkinter import ttk
+from tkinter import scrolledtext
+from tkinter import messagebox
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives import serialization
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+
+# Helper function to reliably receive n bytes from a socket
+def recvn(sock, n):
+    data = b""
+    while len(data) < n:
+        try:
+            packet = sock.recv(n - len(data))
+        except Exception:
+            return None
+        if not packet:
+            return None
+        data += packet
+    return data
+
+# Encrypt plaintext using AES-GCM and return JSON payload (nonce, tag, ciphertext)
+def aes_encrypt(key, plaintext):
+    cipher = AES.new(key, AES.MODE_GCM)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    nonce = cipher.nonce
+    payload = {"nonce": nonce.hex(), "tag": tag.hex(), "ciphertext": ciphertext.hex()}
+    return json.dumps(payload).encode("utf-8")
+
+# Decrypt AES-GCM encrypted JSON payload and return plaintext
+def aes_decrypt(key, json_ciphertext):
+    payload = json.loads(json_ciphertext.decode("utf-8"))
+    nonce = bytes.fromhex(payload["nonce"])
+    tag = bytes.fromhex(payload["tag"])
+    ciphertext = bytes.fromhex(payload["ciphertext"])
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    return plaintext
+
+# Perform an X25519 key exchange handshake to derive a shared key.
+def do_x25519_handshake(sock, is_server):
+    local_private_key = X25519PrivateKey.generate()  # Generate local private key
+    local_public_key = local_private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    )
+    if is_server:
+        header = recvn(sock, 2)  # Receive client's public key length
+        if not header:
+            raise ConnectionError("读取客户端公钥长度失败")
+        client_pub_len = struct.unpack("!H", header)[0]
+        client_public = recvn(sock, client_pub_len)  # Receive client's public key
+        if not client_public:
+            raise ConnectionError("接收客户端公钥失败")
+        sock.sendall(struct.pack("!H", len(local_public_key)) + local_public_key)  # Send our public key
+    else:
+        sock.sendall(struct.pack("!H", len(local_public_key)) + local_public_key)  # Send our public key
+        header = recvn(sock, 2)  # Receive server's public key length
+        if not header:
+            raise ConnectionError("读取服务器公钥长度失败")
+        server_pub_len = struct.unpack("!H", header)[0]
+        client_public = recvn(sock, server_pub_len)  # Receive server's public key
+        if not client_public:
+            raise ConnectionError("接收服务器公钥失败")
+    peer_public_key = X25519PublicKey.from_public_bytes(client_public)
+    shared_key = local_private_key.exchange(peer_public_key)  # Derive shared key
+    return shared_key
+
+# ChatClient handles connection, encryption, and message sending/receiving.
+class ChatClient:
+    def __init__(self, mode, server_ip, port, ui_callback):
+        self.mode = mode
+        self.server_ip = server_ip
+        self.port = port
+        self.sock = None
+        self.key = None
+        self.stop_event = threading.Event()
+        self.ui_callback = ui_callback
+        self.send_lock = threading.Lock()
+        self.threads = []
+
+    def log(self, msg, tag="info"):
+        # Log message to UI via callback.
+        self.ui_callback(msg, tag)
+
+    def start(self):
+        # Start client/server thread.
+        t = threading.Thread(target=self.run, daemon=True)
+        t.start()
+        self.threads.append(t)
+
+    def run(self):
+        # Run as client or server based on mode.
+        if self.mode == "c":
+            self.run_client()
+        else:
+            self.run_server()
+
+    def run_client(self):
+        reconnect_interval = 5
+        while not self.stop_event.is_set():
+            try:
+                self.log("尝试连接到服务器 {}:{} ...".format(self.server_ip, self.port), "sys")
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.sock.connect((self.server_ip, self.port))
+                self.log("已连接到服务器 {}:{}".format(self.server_ip, self.port), "sys")
+                self.key = do_x25519_handshake(self.sock, is_server=False)  # Perform handshake
+                t_recv = threading.Thread(target=self.receiver, daemon=True)
+                t_recv.start()
+                self.threads.append(t_recv)
+                while not self.stop_event.is_set():
+                    time.sleep(0.5)
+                break
+            except Exception as e:
+                self.log("连接/通信异常: {}".format(e), "error")
+                if self.sock:
+                    try:
+                        self.sock.close()
+                    except Exception:
+                        pass
+                self.log("将在 {} 秒后重连...".format(reconnect_interval), "sys")
+                time.sleep(reconnect_interval)
+
+    def run_server(self):
+        try:
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.bind(("", self.port))
+            server_sock.listen(5)
+            self.log("服务器在端口 {} 监听中...".format(self.port), "sys")
+            while not self.stop_event.is_set():
+                server_sock.settimeout(1.0)
+                try:
+                    conn, addr = server_sock.accept()
+                except socket.timeout:
+                    continue
+                self.log("接收到来自 {} 的连接".format(addr), "sys")
+                try:
+                    key = do_x25519_handshake(conn, is_server=True)  # Handshake on connection
+                except Exception as e:
+                    self.log("握手异常: {}".format(e), "error")
+                    conn.close()
+                    continue
+                t_recv = threading.Thread(target=self.receiver_thread, args=(conn, key), daemon=True)
+                t_recv.start()
+                self.threads.append(t_recv)
+                with self.send_lock:
+                    if self.sock:
+                        try:
+                            self.sock.close()
+                        except Exception:
+                            pass
+                    self.sock = conn
+                    self.key = key
+            server_sock.close()
+        except Exception as e:
+            self.log("服务器异常: {}".format(e), "error")
+
+    # Receiving messages in client mode.
+    def receiver(self):
+        try:
+            while not self.stop_event.is_set():
+                header = recvn(self.sock, 4)
+                if not header:
+                    self.log("连接可能已断开", "error")
+                    self.stop_event.set()
+                    break
+                (msg_len,) = struct.unpack("!I", header)
+                data = recvn(self.sock, msg_len)
+                if not data:
+                    self.log("接收数据不完整, 连接断开", "error")
+                    self.stop_event.set()
+                    break
+                try:
+                    decrypted = aes_decrypt(self.key, data)  # Decrypt received message
+                    self.log("对方: " + decrypted.decode("utf-8"), "peer")
+                except Exception as e:
+                    self.log("解密异常: " + str(e), "error")
+        except Exception as e:
+            self.log("接收线程异常: " + str(e), "error")
+            self.stop_event.set()
+    # Receiving messages in server mode.
+    def receiver_thread(self, conn, key):
+        try:
+            while not self.stop_event.is_set():
+                header = recvn(conn, 4)
+                if not header:
+                    self.log("连接 {} 断开".format(conn.getpeername()), "error")
+                    break
+                (msg_len,) = struct.unpack("!I", header)
+                data = recvn(conn, msg_len)
+                if not data:
+                    self.log("数据未完整, 连接 {} 关闭".format(conn.getpeername()), "error")
+                    break
+                try:
+                    decrypted = aes_decrypt(key, data)
+                    self.log("对方({}): ".format(conn.getpeername()) + decrypted.decode("utf-8"), "peer")
+                except Exception as e:
+                    self.log("解密异常: " + str(e), "error")
+        except Exception as e:
+            self.log("接收线程异常: " + str(e), "error")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    # Send a message: encrypt it and then send.
+    def send_message(self, message):
+        if not self.sock or not self.key:
+            self.log("未建立连接", "error")
+            return
+        try:
+            encrypted = aes_encrypt(self.key, message.encode("utf-8"))
+            with self.send_lock:
+                self.sock.sendall(struct.pack("!I", len(encrypted)) + encrypted)
+            self.log("我: " + message, "self")
+        except Exception as e:
+            self.log("发送异常: " + str(e), "error")
+
+    # Stop all activities.
+    def stop(self):
+        self.stop_event.set()
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+
+# ChatGUI manages the graphical user interface.
+class ChatGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("握手聊天 (AES-GCM)")
+        self.ui_queue = queue.Queue()
+        self.chat_client = None
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TNotebook.Tab", font=("Helvetica", 12, "bold"))
+        style.configure("TLabel", font=("Helvetica", 11))
+        style.configure("TButton", font=("Helvetica", 11))
+        style.configure("TEntry", font=("Helvetica", 11))
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(expand=True, fill="both")
+        self.setup_settings_tab()
+        self.setup_chat_tab()
+        self.root.after(100, self.process_ui_queue)
+
+    # Setup settings tab for configuration.
+    def setup_settings_tab(self):
+        self.settings_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.settings_frame, text="设置")
+        mode_frame = ttk.LabelFrame(self.settings_frame, text="模式选择")
+        mode_frame.pack(fill="x", padx=10, pady=10)
+        self.mode_var = tk.StringVar(value="c")
+        r_client = ttk.Radiobutton(mode_frame, text="客户端", variable=self.mode_var, value="c", command=self.update_mode)
+        r_server = ttk.Radiobutton(mode_frame, text="服务器", variable=self.mode_var, value="s", command=self.update_mode)
+        r_client.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        r_server.grid(row=0, column=1, padx=10, pady=5, sticky="w")
+
+        ip_frame = ttk.Frame(self.settings_frame)
+        ip_frame.pack(fill="x", padx=10, pady=5)
+        ttk.Label(ip_frame, text="服务器IP：").grid(row=0, column=0, padx=10, pady=5)
+        self.ip_entry = ttk.Entry(ip_frame)
+        self.ip_entry.grid(row=0, column=1, padx=10, pady=5)
+        self.ip_entry.insert(0, "127.0.0.1")
+
+        port_frame = ttk.Frame(self.settings_frame)
+        port_frame.pack(fill="x", padx=10, pady=5)
+        ttk.Label(port_frame, text="端口：").grid(row=0, column=0, padx=10, pady=5)
+        self.port_entry = ttk.Entry(port_frame)
+        self.port_entry.grid(row=0, column=1, padx=10, pady=5)
+        self.port_entry.insert(0, "5000")
+
+        btn_frame = ttk.Frame(self.settings_frame)
+        btn_frame.pack(fill="x", padx=10, pady=10)
+        self.start_btn = ttk.Button(btn_frame, text="开始", command=self.start_network)
+        self.start_btn.pack(pady=5)
+
+    # Setup chat tab for messaging.
+    def setup_chat_tab(self):
+        self.chat_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.chat_frame, text="聊天")
+
+        self.chat_display = scrolledtext.ScrolledText(self.chat_frame, state="disabled", width=80, height=25, font=("Helvetica", 11))
+        self.chat_display.tag_config("self", foreground="blue")
+        self.chat_display.tag_config("peer", foreground="green")
+        self.chat_display.tag_config("sys", foreground="purple", font=("Helvetica", 10, "italic"))
+        self.chat_display.tag_config("error", foreground="red", font=("Helvetica", 10, "italic"))
+        self.chat_display.pack(padx=10, pady=10, fill="both", expand=True)
+
+        input_frame = ttk.Frame(self.chat_frame)
+        input_frame.pack(fill="x", padx=10, pady=5)
+        self.msg_entry = ttk.Entry(input_frame)
+        self.msg_entry.pack(side="left", fill="x", expand=True, padx=(0,5))
+        self.msg_entry.bind("<Return>", self.send_msg)
+        self.send_btn = ttk.Button(input_frame, text="发送", command=self.send_msg)
+        self.send_btn.pack(side="right")
+
+    # Update UI based on selected mode (disable IP field for server).
+    def update_mode(self):
+        if self.mode_var.get() == "s":
+            self.ip_entry.configure(state="disabled")
+        else:
+            self.ip_entry.configure(state="normal")
+
+    # Start network connection based on settings.
+    def start_network(self):
+        mode = self.mode_var.get()
+        server_ip = self.ip_entry.get().strip()
+        try:
+            port = int(self.port_entry.get().strip())
+        except ValueError:
+            messagebox.showerror("错误", "端口号必须为整数")
+            return
+        if mode == "c" and not server_ip:
+            messagebox.showerror("错误", "客户端模式下请填写服务器IP")
+            return
+        self.start_btn.configure(state="disabled")
+        self.ip_entry.configure(state="disabled")
+        self.port_entry.configure(state="disabled")
+        for child in self.settings_frame.winfo_children():
+            try:
+                child.configure(state="disabled")
+            except Exception:
+                pass
+        self.chat_client = ChatClient(mode, server_ip, port, self.ui_put)
+        self.chat_client.start()
+        self.notebook.select(self.chat_frame)
+
+    # Send message handler bound to UI.
+    def send_msg(self, event=None):
+        msg = self.msg_entry.get().strip()
+        if msg and self.chat_client:
+            threading.Thread(target=self.chat_client.send_message, args=(msg,), daemon=True).start()
+            self.msg_entry.delete(0, tk.END)
+
+    # Put log messages into a thread-safe UI queue.
+    def ui_put(self, msg, tag="info"):
+        self.ui_queue.put((msg, tag))
+
+    # Process UI queue to update chat display.
+    def process_ui_queue(self):
+        while not self.ui_queue.empty():
+            try:
+                msg, tag = self.ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.chat_display.configure(state="normal")
+            self.chat_display.insert(tk.END, msg + "\n", tag)
+            self.chat_display.configure(state="disabled")
+            self.chat_display.see(tk.END)
+        self.root.after(100, self.process_ui_queue)
+
+    # Called when closing the application.
+    def on_close(self):
+        if self.chat_client:
+            self.chat_client.stop()
+        self.root.destroy()
+
+# Main entry point for the GUI application.
+def main():
+    root = tk.Tk()
+    gui = ChatGUI(root)
+    root.protocol("WM_DELETE_WINDOW", gui.on_close)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
