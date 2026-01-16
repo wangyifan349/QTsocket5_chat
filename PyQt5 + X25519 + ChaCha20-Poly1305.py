@@ -17,38 +17,38 @@ a malicious entity tampers with a packet, decryption fails immediately. The enti
 because sending and receiving operate in a separate thread.*
 """
 
-import sys
-import os
-import socket
-import struct
-import hashlib
-import threading
-import pathlib
+import sys                                                   # 导入系统模块，用于与解释器及系统交互
+import os                                                    # 操作系统接口
+import socket                                                # 套接字，用于网络通信
+import struct                                                # 提供打包与解包二进制数据(此处用于长度/nonce处理)
+import hashlib                                               # 提供SHA-256等哈希函数
+import threading                                             # 用于多线程
+import pathlib                                               # 提供面向对象的文件路径处理
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtWidgets import (
+from PyQt5.QtCore import Qt, QThread, pyqtSignal             # Qt 核心库（线程、信号）
+from PyQt5.QtWidgets import (                                # PyQt5 图形界面组件
     QApplication, QMainWindow, QWidget, QLabel, QLineEdit,
     QPushButton, QTextEdit, QFileDialog, QVBoxLayout, QHBoxLayout,
     QRadioButton, QGroupBox, QButtonGroup
 )
-from PyQt5.QtGui import QPalette, QColor
+from PyQt5.QtGui import QPalette, QColor                     # PyQt5 调色板和颜色类
 
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey  # X25519 密钥
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF                     # HKDF 用于密钥扩展
+from cryptography.hazmat.primitives import hashes                             # 包含 SHA-256 等哈希算法
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305      # ChaCha20-Poly1305 AEAD 加密算法
 
 # Constants for message types and frame sizes.  ←
-MessageTypeText = b'M'
-MessageTypeFileHead = b'H'
-MessageTypeFileChunk = b'C'
-MessageTypeFileEnd = b'E'
+MessageTypeText = b'M'                                   # 表示文本消息
+MessageTypeFileHead = b'H'                               # 表示文件头（名称、大小）
+MessageTypeFileChunk = b'C'                              # 表示文件块内容
+MessageTypeFileEnd = b'E'                                # 表示文件结束(附带SHA-256校验)
 
-FrameLengthSize = 4           # 4-byte length header for each encrypted frame.  ←
-NonceLength = 12              # 4-byte random prefix + 8-byte counter.  ←
-FileChunkSize = 32 * 1024     # Send file in 32 KB chunks.  ←
+FrameLengthSize = 4                                      # 每帧最开始4字节表示加密后数据的总长度
+NonceLength = 12                                         # Nonce长度(4字节随机+8字节计数器)
+FileChunkSize = 32 * 1024                                # 每次读取或发送文件的块大小(32KB)
 
-class NetworkThread(QThread):
+class NetworkThread(QThread):                            # 继承QThread，用于后台执行网络操作
     """
     NetworkThread class handles all socket operations:
     1) Server or client setup (TCP).
@@ -57,24 +57,24 @@ class NetworkThread(QThread):
     4) Handling both chat messages and file transmissions in a background thread.
     """
 
-    signalLog = pyqtSignal(str)                        # Signal for logging text to UI.  ←
-    signalConnected = pyqtSignal(bool)                 # Signal to indicate successful or failed connection.  ←
-    signalMessage = pyqtSignal(str)                    # Signal for plain text messages.  ←
-    signalFileStart = pyqtSignal(str, int, str)        # Signal when file transfer starts: filename, size, save path.  ←
-    signalFileProgress = pyqtSignal(str, int, int)     # Signal to update file progress: filename, received, total.  ←
-    signalFileFinish = pyqtSignal(str, bool, str)      # Signal when file ends: filename, success, path.  ←
+    signalLog = pyqtSignal(str)                          # 用于在UI上显示日志输出
+    signalConnected = pyqtSignal(bool)                   # 是否成功连接或发生异常
+    signalMessage = pyqtSignal(str)                      # 接收到的文本消息
+    signalFileStart = pyqtSignal(str, int, str)          # 文件开始: 文件名, 文件大小, 存储路径
+    signalFileProgress = pyqtSignal(str, int, int)       # 文件进度: 文件名, 已接收字节数, 总大小
+    signalFileFinish = pyqtSignal(str, bool, str)        # 文件结束: 文件名, 是否成功校验, 存储路径
 
     def __init__(self, startupMode, hostAddress, portNumber, parent=None):
-        super().__init__(parent)
-        self.startupMode = startupMode
-        self.hostAddress = hostAddress
-        self.portNumber = portNumber
-        self.networkSocket = None
-        self.threadRunning = True
-        self.aeadCipher = None
-        self.noncePrefixBytes = None
-        self.nonceCounter = 0
-        self.incomingFilesMap = {}  # Dictionary mapping filename => { fileobj, remain, sha256Digest, path, size, received }
+        super().__init__(parent)                         # 调用父类构造
+        self.startupMode = startupMode                   # 字符串 "server"/"client"
+        self.hostAddress = hostAddress                   # IP 地址或域名
+        self.portNumber = portNumber                     # 端口号
+        self.networkSocket = None                        # 存储建立的socket
+        self.threadRunning = True                        # 用于控制线程循环
+        self.aeadCipher = None                           # ChaCha20Poly1305 加解密实例
+        self.noncePrefixBytes = None                     # 4字节随机前缀
+        self.nonceCounter = 0                            # 8字节计数器
+        self.incomingFilesMap = {}                       # 用于临时存储正在接收的文件信息
 
     def run(self):
         """
@@ -82,39 +82,39 @@ class NetworkThread(QThread):
         then loops receiving packets until disconnection or error.  ←
         """
         try:
-            if self.startupMode == "server":
-                serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                serverSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                serverSocket.bind((self.hostAddress, self.portNumber))
-                serverSocket.listen(1)
-                self.signalLog.emit(f"[Server] Listening at {self.hostAddress}:{self.portNumber} ...")
-                connection, addressInfo = serverSocket.accept()
-                self.networkSocket = connection
-                self.signalLog.emit(f"[Server] Connected from {addressInfo}")
-            else:
+            if self.startupMode == "server":                                # 如果是服务器模式
+                serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # 创建TCP socket
+                serverSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # 允许端口重用
+                serverSocket.bind((self.hostAddress, self.portNumber))            # 绑定所需地址和端口
+                serverSocket.listen(1)                                            # 开始监听，等待客户端连接
+                self.signalLog.emit(f"[Server] Listening at {self.hostAddress}:{self.portNumber} ...") 
+                connection, addressInfo = serverSocket.accept()                   # 阻塞等待连接
+                self.networkSocket = connection                                  # 保存套接字
+                self.signalLog.emit(f"[Server] Connected from {addressInfo}")     # 日志输出连接信息
+            else:                                                                # 客户端模式
                 self.signalLog.emit(f"[Client] Connecting to {self.hostAddress}:{self.portNumber} ...")
-                clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                clientSocket.connect((self.hostAddress, self.portNumber))
-                self.networkSocket = clientSocket
-                self.signalLog.emit("[Client] Connection established")
+                clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # 创建TCP socket
+                clientSocket.connect((self.hostAddress, self.portNumber))         # 主动连接服务器
+                self.networkSocket = clientSocket                                # 保存套接字
+                self.signalLog.emit("[Client] Connection established")            # 通知连接成功
 
-            self.performKeyExchange()
+            self.performKeyExchange()                                            # 执行一次X25519+HKDF来建立加密通道
 
-            self.signalConnected.emit(True)
+            self.signalConnected.emit(True)                                      # 通知UI已成功连接
 
-            while self.threadRunning:
-                frameData = self.receiveFrame()
-                if not frameData:
+            while self.threadRunning:                                            # 开始循环接收数据
+                frameData = self.receiveFrame()                                  # 尝试接收并解密一帧
+                if not frameData:                                                # 如果没有数据，表示对端断开
                     break
-                self.processReceivedMessage(frameData)
+                self.processReceivedMessage(frameData)                           # 解析并处理该消息
 
-        except Exception as exceptionInfo:
+        except Exception as exceptionInfo:                                       # 出现任何异常
             self.signalLog.emit("[!] Connection or thread error: " + str(exceptionInfo))
-            self.signalConnected.emit(False)
+            self.signalConnected.emit(False)                                     # 通知UI连接失败
         finally:
-            if self.networkSocket:
+            if self.networkSocket:                                               # 清理连接
                 self.networkSocket.close()
-            self.threadRunning = False
+            self.threadRunning = False                                           # 标记线程结束
 
     def performKeyExchange(self):
         """
@@ -124,20 +124,20 @@ class NetworkThread(QThread):
         3) Derive a 32-byte session key by HKDF(SHA256).
         4) Initialize ChaCha20Poly1305 with that session key.
         """
-        privateKey = X25519PrivateKey.generate()
-        localPubBytes = privateKey.public_key().public_bytes()
+        privateKey = X25519PrivateKey.generate()                  # 生成临时私钥
+        localPubBytes = privateKey.public_key().public_bytes()    # 获取公钥字节
 
-        if self.startupMode == "server":
-            self.sendAll(localPubBytes)                  # send first
-            remotePub = self.receiveExact(32)            # then receive
-        else:
-            remotePub = self.receiveExact(32)            # receive first
-            self.sendAll(localPubBytes)                  # then send
+        if self.startupMode == "server":                          # 服务器先发公钥，再收对方公钥
+            self.sendAll(localPubBytes)
+            remotePub = self.receiveExact(32)
+        else:                                                     # 客户端先收对方公钥，再发自身公钥
+            remotePub = self.receiveExact(32)
+            self.sendAll(localPubBytes)
 
-        remoteKey = X25519PublicKey.from_public_bytes(remotePub)
-        sharedSecret = privateKey.exchange(remoteKey)
+        remoteKey = X25519PublicKey.from_public_bytes(remotePub)  # 解析对方公钥
+        sharedSecret = privateKey.exchange(remoteKey)             # 计算共享密钥(32字节)
 
-        # KDF step
+        # 使用HKDF派生出会话对称密钥(32字节)
         hkdfProcessor = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
@@ -146,61 +146,61 @@ class NetworkThread(QThread):
         )
         sessionKey = hkdfProcessor.derive(sharedSecret)
 
-        self.aeadCipher = ChaCha20Poly1305(sessionKey)
-        self.noncePrefixBytes = os.urandom(4)
-        self.nonceCounter = 0
+        self.aeadCipher = ChaCha20Poly1305(sessionKey)            # 初始化AEAD加密器
+        self.noncePrefixBytes = os.urandom(4)                     # 生成4字节随机前缀
+        self.nonceCounter = 0                                     # 计数器归零
 
-        self.signalLog.emit("[+] Secure channel established (X25519 + ChaCha20Poly1305)")
+        self.signalLog.emit("[+] Secure channel established (X25519 + ChaCha20Poly1305)") # 通知UI
 
     def buildNonce(self) -> bytes:
         """
         Builds a unique nonce = 4-byte random prefix + 8-byte big-endian counter.
         """
-        counterBytes = struct.pack(">Q", self.nonceCounter)
-        self.nonceCounter = (self.nonceCounter + 1) & 0xFFFFFFFFFFFFFFFF
-        return self.noncePrefixBytes + counterBytes
+        counterBytes = struct.pack(">Q", self.nonceCounter)     # 将计数器转换为8字节大端
+        self.nonceCounter = (self.nonceCounter + 1) & 0xFFFFFFFFFFFFFFFF  # 递增并防止溢出
+        return self.noncePrefixBytes + counterBytes             # 拼合成12字节nonce
 
     def encryptData(self, plaintext: bytes) -> bytes:
         """
         Encrypts data with ChaCha20Poly1305. Returns 12-byte nonce + ciphertext.  ←
         """
-        nonceBytes = self.buildNonce()
-        cipherText = self.aeadCipher.encrypt(nonceBytes, plaintext, None)
-        return nonceBytes + cipherText
+        nonceBytes = self.buildNonce()                                       # 先生成nonce
+        cipherText = self.aeadCipher.encrypt(nonceBytes, plaintext, None)    # AEAD加密
+        return nonceBytes + cipherText                                      # 返回nonce+密文
 
     def decryptData(self, encryptedData: bytes) -> bytes:
         """
         Decrypts data by splitting out the 12-byte nonce from the ciphertext.  ←
         """
-        nonceBytes = encryptedData[:NonceLength]
-        cipherBody = encryptedData[NonceLength:]
-        return self.aeadCipher.decrypt(nonceBytes, cipherBody, None)
+        nonceBytes = encryptedData[:NonceLength]        # 提取前12字节nonce
+        cipherBody = encryptedData[NonceLength:]        # 剩余是实际密文+MAC
+        return self.aeadCipher.decrypt(nonceBytes, cipherBody, None)  # 解密得到原文
 
     def sendFrame(self, plaintext: bytes):
         """
         Encrypts and sends a frame: [4-byte length][12-byte nonce + ciphertext].  ←
         """
-        enc = self.encryptData(plaintext)
-        header = struct.pack(">I", len(enc))
-        self.sendAll(header + enc)
+        enc = self.encryptData(plaintext)                  # 先加密
+        header = struct.pack(">I", len(enc))               # 打包4字节表示这帧的长度
+        self.sendAll(header + enc)                         # 依次发送长度和密文
 
     def receiveFrame(self) -> bytes:
         """
         Receives an encrypted frame, then decrypts it. Returns plaintext.  ←
         """
-        lengthHeader = self.receiveExact(FrameLengthSize)
-        if not lengthHeader:
+        lengthHeader = self.receiveExact(FrameLengthSize)   # 先收4字节长度
+        if not lengthHeader:                                # 若为空表示连接断开
             return b''
-        totalLen = struct.unpack(">I", lengthHeader)[0]
-        encryptedFrame = self.receiveExact(totalLen)
-        return self.decryptData(encryptedFrame)
+        totalLen = struct.unpack(">I", lengthHeader)[0]     # 解包长度值
+        encryptedFrame = self.receiveExact(totalLen)        # 再收指定字节数的加密数据
+        return self.decryptData(encryptedFrame)             # 解密后返回明文
 
     def sendAll(self, data: bytes):
         """
         Sends all data over the socket until complete.  ←
         """
-        if self.networkSocket:
-            self.networkSocket.sendall(data)
+        if self.networkSocket:                     # 若socket存在
+            self.networkSocket.sendall(data)       # 使用sendall确保全部发送
 
     def receiveExact(self, size: int) -> bytes:
         """
@@ -208,9 +208,9 @@ class NetworkThread(QThread):
         or raises ConnectionError if the peer closes.  ←
         """
         bufferData = b''
-        while len(bufferData) < size:
+        while len(bufferData) < size:                           # 循环直到接收满size字节
             chunk = self.networkSocket.recv(size - len(bufferData))
-            if not chunk:
+            if not chunk:                                       # 对端断开
                 raise ConnectionError("Remote side closed the connection.")
             bufferData += chunk
         return bufferData
@@ -220,27 +220,27 @@ class NetworkThread(QThread):
         Distinguishes the message type and handles accordingly.
         For file, it uses a dictionary to store partial data and finalize at the end.  ←
         """
-        messageType = messageData[:1]
-        bodyData = messageData[1:]
+        messageType = messageData[:1]                      # 首字节为消息类型
+        bodyData = messageData[1:]                         # 其余部分为payload
 
-        if messageType == MessageTypeText:
+        if messageType == MessageTypeText:                 # 若是文本消息
             textString = bodyData.decode('utf-8', errors='ignore')
-            self.signalMessage.emit(textString)
+            self.signalMessage.emit(textString)            # 发出信号给UI
 
-        elif messageType == MessageTypeFileHead:
-            fileNameLength = struct.unpack(">H", bodyData[:2])[0]
+        elif messageType == MessageTypeFileHead:           # 文件头信息
+            fileNameLength = struct.unpack(">H", bodyData[:2])[0]   # 文件名长度
             fileNameString = bodyData[2:2 + fileNameLength].decode('utf-8', errors='ignore')
             fileSize = struct.unpack(">Q", bodyData[2 + fileNameLength:2 + fileNameLength + 8])[0]
 
-            baseFileName = pathlib.Path(fileNameString).name
+            baseFileName = pathlib.Path(fileNameString).name         # 提取干净的文件名
             targetPath = pathlib.Path(baseFileName)
             indexCount = 1
-            while targetPath.exists():
+            while targetPath.exists():                                # 防止重名覆盖
                 targetPath = pathlib.Path(f"{baseFileName}_{indexCount}")
                 indexCount += 1
 
-            openedFile = targetPath.open("wb")
-            self.incomingFilesMap[fileNameString] = {
+            openedFile = targetPath.open("wb")                        # 以二进制写方式打开文件
+            self.incomingFilesMap[fileNameString] = {                 # 在映射中保存文件信息
                 "fileObject": openedFile,
                 "remainBytes": fileSize,
                 "sha256Digest": hashlib.sha256(),
@@ -248,53 +248,53 @@ class NetworkThread(QThread):
                 "sizeBytes": fileSize,
                 "receivedBytes": 0
             }
-            self.signalFileStart.emit(fileNameString, fileSize, str(targetPath))
+            self.signalFileStart.emit(fileNameString, fileSize, str(targetPath))  # 通知UI
 
-        elif messageType == MessageTypeFileChunk:
+        elif messageType == MessageTypeFileChunk:   # 文件块
             fileNameLength = struct.unpack(">H", bodyData[:2])[0]
             fileNameString = bodyData[2:2 + fileNameLength].decode('utf-8', errors='ignore')
             chunkData = bodyData[2 + fileNameLength:]
-            if fileNameString in self.incomingFilesMap:
+            if fileNameString in self.incomingFilesMap:               # 若在列表中
                 infoDict = self.incomingFilesMap[fileNameString]
                 fobj = infoDict["fileObject"]
-                fobj.write(chunkData)
-                infoDict["sha256Digest"].update(chunkData)
+                fobj.write(chunkData)                                 # 写入文件
+                infoDict["sha256Digest"].update(chunkData)            # 更新hash
                 infoDict["remainBytes"] -= len(chunkData)
                 infoDict["receivedBytes"] += len(chunkData)
                 self.signalFileProgress.emit(fileNameString, infoDict["receivedBytes"], infoDict["sizeBytes"])
 
-        elif messageType == MessageTypeFileEnd:
+        elif messageType == MessageTypeFileEnd:     # 文件结束
             fileNameLength = struct.unpack(">H", bodyData[:2])[0]
             fileNameString = bodyData[2:2 + fileNameLength].decode('utf-8', errors='ignore')
             fileDigest = bodyData[2 + fileNameLength:]
-            if fileNameString in self.incomingFilesMap:
+            if fileNameString in self.incomingFilesMap:               # 查找对应的文件信息
                 infoDict = self.incomingFilesMap.pop(fileNameString)
                 fobj = infoDict["fileObject"]
-                fobj.close()
+                fobj.close()                                          # 关闭文件
                 realDigest = infoDict["sha256Digest"].digest()
-                successCheck = (fileDigest == realDigest)
+                successCheck = (fileDigest == realDigest)             # 对比sha256哈希是否一致
                 self.signalFileFinish.emit(fileNameString, successCheck, infoDict["filePath"])
 
     def sendText(self, textContent: str):
         """
         Public method to send a text message to the peer.  ←
         """
-        if not self.aeadCipher:
+        if not self.aeadCipher:                      # 若加密器还未初始化
             return
-        plainMessage = MessageTypeText + textContent.encode('utf-8')
-        self.sendFrame(plainMessage)
+        plainMessage = MessageTypeText + textContent.encode('utf-8')  # 拼装文本消息
+        self.sendFrame(plainMessage)                                   
 
     def sendFile(self, filePathName: str):
         """
         Public method to send a file in chunks, plus a final SHA-256.  ←
         """
         pathObject = pathlib.Path(filePathName)
-        if not pathObject.is_file():
+        if not pathObject.is_file():                                # 判断文件是否存在
             self.signalLog.emit(f"[!] File not found: {filePathName}")
             return
 
-        fileNameBytes = pathObject.name.encode('utf-8')
-        fileSize = pathObject.stat().st_size
+        fileNameBytes = pathObject.name.encode('utf-8')             # 提取文件名字节
+        fileSize = pathObject.stat().st_size                        # 获取文件大小
 
         # Step 1: Send File Head
         headMessage = (MessageTypeFileHead +
@@ -305,9 +305,9 @@ class NetworkThread(QThread):
 
         # Step 2: Send File Chunks and do SHA-256
         localSha256 = hashlib.sha256()
-        with pathObject.open("rb") as readingFile:
+        with pathObject.open("rb") as readingFile:                  # 二进制读
             while True:
-                chunk = readingFile.read(FileChunkSize)
+                chunk = readingFile.read(FileChunkSize)            # 循环读取
                 if not chunk:
                     break
                 localSha256.update(chunk)
@@ -336,30 +336,30 @@ class MainWindow(QMainWindow):
     """
 
     def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Secure Chat (X25519 + ChaCha20Poly1305)")
-        self.resize(800, 600)
+        super().__init__()                                        # 调用父类构造函数
+        self.setWindowTitle("Secure Chat (X25519 + ChaCha20Poly1305)")  # 设置窗口标题
+        self.resize(800, 600)                                     # 设置初始大小
 
         # Set color theme using QPalette.  ←
-        mainPalette = QPalette()
-        mainPalette.setColor(QPalette.Window, QColor("#FFF8DC"))   # cornsilk
-        mainPalette.setColor(QPalette.Base, QColor("#F5FFFA"))     # mintcream
-        mainPalette.setColor(QPalette.AlternateBase, QColor("#FFFFE0"))
-        self.setPalette(mainPalette)
+        mainPalette = QPalette()                                  # 创建调色板
+        mainPalette.setColor(QPalette.Window, QColor("#FFF8DC"))  # 背景：cornsilk(淡金色)
+        mainPalette.setColor(QPalette.Base, QColor("#F5FFFA"))    # 文本输入背景：mintcream(淡绿色)
+        mainPalette.setColor(QPalette.AlternateBase, QColor("#FFFFE0")) # 备用色
+        self.setPalette(mainPalette)                              # 应用到窗口
 
         # Mode selection group
-        self.radioServerMode = QRadioButton("Server Mode")
-        self.radioClientMode = QRadioButton("Client Mode")
-        self.radioServerMode.setChecked(True)
-        self.buttonGroupMode = QButtonGroup()
+        self.radioServerMode = QRadioButton("Server Mode")        # 单选按钮：服务器模式
+        self.radioClientMode = QRadioButton("Client Mode")        # 单选按钮：客户端模式
+        self.radioServerMode.setChecked(True)                     # 默认选中服务器
+        self.buttonGroupMode = QButtonGroup()                     # 组合以互斥
         self.buttonGroupMode.addButton(self.radioServerMode)
         self.buttonGroupMode.addButton(self.radioClientMode)
 
-        self.hostAddressLineEdit = QLineEdit("127.0.0.1")
-        self.portNumberLineEdit = QLineEdit("9999")
-        self.startConnectionButton = QPushButton("Start or Connect")
+        self.hostAddressLineEdit = QLineEdit("127.0.0.1")         # 默认地址
+        self.portNumberLineEdit = QLineEdit("9999")               # 默认端口
+        self.startConnectionButton = QPushButton("Start or Connect")  # 按钮
 
-        modeLayout = QHBoxLayout()
+        modeLayout = QHBoxLayout()                                # 水平布局存放模式控件
         modeLayout.addWidget(self.radioServerMode)
         modeLayout.addWidget(self.radioClientMode)
         modeLayout.addWidget(QLabel("Host:"))
@@ -368,65 +368,65 @@ class MainWindow(QMainWindow):
         modeLayout.addWidget(self.portNumberLineEdit)
         modeLayout.addWidget(self.startConnectionButton)
 
-        modeGroupBox = QGroupBox("Startup Mode")
+        modeGroupBox = QGroupBox("Startup Mode")                  # 分组框
         modeGroupBox.setLayout(modeLayout)
 
         # Chat log and controls
-        self.chatLogTextEdit = QTextEdit()
-        self.chatLogTextEdit.setReadOnly(True)
+        self.chatLogTextEdit = QTextEdit()                        # 聊天记录显示
+        self.chatLogTextEdit.setReadOnly(True)                    # 只读，用户不可编辑
 
-        self.messageLineEdit = QLineEdit()
-        self.sendMessageButton = QPushButton("Send Message")
-        self.sendFileButton = QPushButton("Send File")
+        self.messageLineEdit = QLineEdit()                        # 用于输入聊天消息
+        self.sendMessageButton = QPushButton("Send Message")      # 发送消息按钮
+        self.sendFileButton = QPushButton("Send File")            # 发送文件按钮
 
-        bottomLayout = QHBoxLayout()
+        bottomLayout = QHBoxLayout()                              # 底部水平布局
         bottomLayout.addWidget(self.messageLineEdit)
         bottomLayout.addWidget(self.sendMessageButton)
         bottomLayout.addWidget(self.sendFileButton)
 
-        mainLayout = QVBoxLayout()
+        mainLayout = QVBoxLayout()                                # 垂直布局，将分组框、聊天记录、底部操作放一起
         mainLayout.addWidget(modeGroupBox)
         mainLayout.addWidget(self.chatLogTextEdit)
         mainLayout.addLayout(bottomLayout)
 
-        containerWidget = QWidget()
-        containerWidget.setLayout(mainLayout)
-        self.setCentralWidget(containerWidget)
+        containerWidget = QWidget()                               # 基础容器
+        containerWidget.setLayout(mainLayout)                     # 设置布局
+        self.setCentralWidget(containerWidget)                    # 设为中心窗口
 
         # Thread reference
-        self.networkThread = None
+        self.networkThread = None                                 # 存放 NetworkThread 实例
 
         # Signals
-        self.startConnectionButton.clicked.connect(self.handleConnectClicked)
-        self.sendMessageButton.clicked.connect(self.handleSendClicked)
+        self.startConnectionButton.clicked.connect(self.handleConnectClicked) # 当点击按钮时执行函数
+        self.sendMessageButton.clicked.connect(self.handleSendClicked)        # 同理
         self.sendFileButton.clicked.connect(self.handleFileClicked)
 
     def handleConnectClicked(self):
         """
         Called when Start/Connect button is pressed. Sets up and starts the background thread.  ←
         """
-        if self.networkThread and self.networkThread.isRunning():
-            self.chatLogTextEdit.append("Already running or connected.")
+        if self.networkThread and self.networkThread.isRunning():          # 若线程存在且在运行
+            self.chatLogTextEdit.append("Already running or connected.")   # 提示
             return
 
-        currentMode = "server" if self.radioServerMode.isChecked() else "client"
-        hostStr = self.hostAddressLineEdit.text().strip()
-        portVal = int(self.portNumberLineEdit.text().strip())
+        currentMode = "server" if self.radioServerMode.isChecked() else "client"  # 判断所选模式
+        hostStr = self.hostAddressLineEdit.text().strip()                  # 读取地址
+        portVal = int(self.portNumberLineEdit.text().strip())              # 读取端口
 
-        self.networkThread = NetworkThread(currentMode, hostStr, portVal)
-        self.networkThread.signalLog.connect(self.logAppend)
-        self.networkThread.signalConnected.connect(self.handleConnected)
-        self.networkThread.signalMessage.connect(self.handlePeerMessage)
-        self.networkThread.signalFileStart.connect(self.handleFileStart)
-        self.networkThread.signalFileProgress.connect(self.handleFileProgress)
-        self.networkThread.signalFileFinish.connect(self.handleFileFinish)
-        self.networkThread.start()
+        self.networkThread = NetworkThread(currentMode, hostStr, portVal)  # 创建线程实例
+        self.networkThread.signalLog.connect(self.logAppend)               # 关联日志信号
+        self.networkThread.signalConnected.connect(self.handleConnected)   # 关联连接状态信号
+        self.networkThread.signalMessage.connect(self.handlePeerMessage)   # 关联接收消息信号
+        self.networkThread.signalFileStart.connect(self.handleFileStart)   # 关联文件开始信号
+        self.networkThread.signalFileProgress.connect(self.handleFileProgress) # 文件进度
+        self.networkThread.signalFileFinish.connect(self.handleFileFinish) # 文件完成
+        self.networkThread.start()                                         # 启动线程
 
     def logAppend(self, text: str):
         """
         Appends a line of text to the chat log.  ←
         """
-        self.chatLogTextEdit.append(text)
+        self.chatLogTextEdit.append(text)    # 在聊天记录中追加文本
 
     def handleConnected(self, ok: bool):
         """
@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
         """
         Called when a text message from peer arrives.  ←
         """
-        self.chatLogTextEdit.append(f"<Peer>: {text}")
+        self.chatLogTextEdit.append(f"<Peer>: {text}")  # 显示对方消息
 
     def handleFileStart(self, fileName: str, fileSize: int, savePath: str):
         """
@@ -453,7 +453,7 @@ class MainWindow(QMainWindow):
         """
         Called as chunks of file data arrive.  ←
         """
-        pct = float(receivedBytes) / float(totalBytes) * 100 if totalBytes else 0
+        pct = float(receivedBytes) / float(totalBytes) * 100 if totalBytes else 0  # 计算百分比
         self.chatLogTextEdit.append(f"[FileProgress] {fileName}: {receivedBytes}/{totalBytes} ({pct:.1f}%)")
 
     def handleFileFinish(self, fileName: str, successCheck: bool, pathUsed: str):
@@ -469,14 +469,14 @@ class MainWindow(QMainWindow):
         """
         Sends a chat message to the peer if connected.  ←
         """
-        if not self.networkThread or not self.networkThread.isRunning():
+        if not self.networkThread or not self.networkThread.isRunning():      # 若线程不存在或未运行
             self.chatLogTextEdit.append("Not connected, cannot send.")
             return
-        textToSend = self.messageLineEdit.text().strip()
+        textToSend = self.messageLineEdit.text().strip()                     # 获取输入的文本
         if textToSend:
-            self.networkThread.sendText(textToSend)
-            self.chatLogTextEdit.append(f"<Me>: {textToSend}")
-            self.messageLineEdit.clear()
+            self.networkThread.sendText(textToSend)                          # 通过线程发送
+            self.chatLogTextEdit.append(f"<Me>: {textToSend}")               # 本地也显示
+            self.messageLineEdit.clear()                                     # 清空输入框
 
     def handleFileClicked(self):
         """
@@ -485,23 +485,22 @@ class MainWindow(QMainWindow):
         if not self.networkThread or not self.networkThread.isRunning():
             self.chatLogTextEdit.append("Not connected, cannot send file.")
             return
-        fileName, _ = QFileDialog.getOpenFileName(self, "Select File")
+        fileName, _ = QFileDialog.getOpenFileName(self, "Select File")  # 弹出文件选择对话框
         if fileName:
             self.chatLogTextEdit.append(f"Sending file: {fileName}")
-            self.networkThread.sendFile(fileName)
+            self.networkThread.sendFile(fileName)                       # 调用线程的发送文件函数
 
 def MainEntryPoint():
     """
     Main entry point for launching the PyQt application.  ←
     """
-    applicationObject = QApplication(sys.argv)
-    mainWindow = MainWindow()
-    mainWindow.show()
-    sys.exit(applicationObject.exec_())
+    applicationObject = QApplication(sys.argv)  # 创建QApplication对象
+    mainWindow = MainWindow()                   # 创建主窗口
+    mainWindow.show()                           # 显示主窗口
+    sys.exit(applicationObject.exec_())         # 进入事件循环
 
 if __name__ == "__main__":
-    MainEntryPoint()
-
+    MainEntryPoint()                            # 如果是主入口，则调用MainEntryPoint()
 
 
 """
