@@ -175,5 +175,12 @@ git config --global user.email "your.email@example.com"
 echo "配置 curl 默认代理..."
 echo "proxy = \"http://192.168.123.129:2080\"" | sudo tee -a ~/.curlrc
 
+
+
+# 安装最新的稳定内核（包括内核头文件）
+echo "安装最新的稳定内核..."
+sudo apt install -y linux-image-generic linux-headers-generic
+
+sudo apt autoremove --purge
 # 完成
 echo "基础开发环境安装完成，代理设置已生效，系统优化已完成！"
