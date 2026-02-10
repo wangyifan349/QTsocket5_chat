@@ -1,3 +1,5 @@
+//This program implements a secure communication system based on SOCKS5 proxy, supporting message exchange and file transfer between the client and server. The client and server generate a shared key through secp256k1 key exchange, and use the AES-GCM symmetric encryption algorithm to ensure the security of the communication. The program uses independent threads to handle file and message sending and receiving, preventing blocking. Files are transferred in 1MB chunks, each being encrypted and decrypted, with SHA256 used to verify file integrity after transfer. The system can simultaneously handle real-time chat and large file transfers, ensuring efficient and secure two-way communication.
+
 use secp256k1::{Secp256k1, SecretKey, PublicKey};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::*;
