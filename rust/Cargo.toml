@@ -1,0 +1,21 @@
+[package]
+name = "Rust_chat"
+version = "0.1.0"
+edition = "2026"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+secp256k1 = "0.21"
+sha2 = "0.9"
+rand = "0.8"
+tokio-socks = "0.6"
+aes-gcm = "0.10"
+
+[profile.release]
+opt-level = 3          # 启用最大优化（压缩）
+debug = false          # 禁用调试符号
+lto = true             # 启用链接时间优化
+panic = "abort"        # 设置 panic 策略为 "abort"（减少代码大小，通常对性能有益）
+
