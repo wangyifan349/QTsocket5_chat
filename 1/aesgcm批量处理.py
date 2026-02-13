@@ -1,145 +1,122 @@
 import os
-import curses
-from concurrent.futures import ThreadPoolExecutor
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
+import time
 # 使用密码生成 AES 密钥
 def generate_aes_key_from_password(password):
-    # 使用 PBKDF2 从密码生成 AES 密钥
-    salt = os.urandom(16)  # 生成随机盐，确保相同密码每次生成的密钥不同
+    # 生成一个随机盐值
+    salt = os.urandom(16)
+    
+    # 使用 PBKDF2HMAC 生成 AES 密钥
+    # 设置生成 128 位 AES 密钥
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
-        length=32,  # 256 位密钥
-        salt=salt,
-        iterations=100000,
+        length=16,  # AES 密钥的长度（128 位）
+        salt=salt,  # 盐值
+        iterations=100000,  # 迭代次数（100000 次）
         backend=default_backend()
     )
-    aes_key = kdf.derive(password.encode())  # 使用密码生成密钥
-    return aes_key, salt
-# 加密单个文件
-def encrypt_file(input_file_path, output_file_path, aes_key):
-    # 生成一个随机的 nonce（对于 AES-GCM 至少 12 字节）
-    nonce = os.urandom(12)
-    # 初始化 AES 加密器
-    cipher = Cipher(algorithms.AES(aes_key), modes.GCM(nonce), backend=default_backend())
-    encryptor = cipher.encryptor()
-    with open(input_file_path, 'rb') as input_file:
-        # 创建输出文件，并写入 nonce 和 tag
-        with open(output_file_path, 'wb') as output_file:
-            # 先写入 nonce
-            output_file.write(nonce)
-            # 加密文件内容
-            while chunk := input_file.read(4096):  # 以 4KB 为单位加密文件
-                ciphertext = encryptor.update(chunk)
-                output_file.write(ciphertext)
-            
-            # 写入 GCM tag
-            tag = encryptor.finalize()
-            output_file.write(tag)
+    # 根据密码生成 AES 密钥
+    key = kdf.derive(password.encode())  
+    return key, salt
+from datetime import datetime
+# 获取当前的时间戳（标准时间），并将其格式化为易读的字符串，作为 AAD
+def get_current_timestamp():
+    # 获取当前时间并格式化为 'YYYY-MM-DD HH:MM:SS' 格式
+    current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    return current_time  # 返回格式化后的标准时间字符串
+# 加密文件
+def encrypt_file(input_file_path, aes_key):
+    try:
+        # 创建 AESGCM 加密对象
+        aesgcm = AESGCM(aes_key)
+        # 生成 12 字节的随机 nonce（初始化向量）
+        nonce = os.urandom(12)
+        # 获取当前时间戳，并将其作为 AAD（认证但未加密的数据）
+        aad = get_current_timestamp().encode()
+        # 读取文件内容并进行加密
+        with open(input_file_path, 'rb') as input_file:
+            data = input_file.read()  # 读取整个文件的二进制数据
+        # 加密数据，返回加密后的密文
+        ciphertext = aesgcm.encrypt(nonce, data, aad)  # 加密过程
+        # 将 nonce、AAD 和密文写入文件
+        with open(input_file_path, 'wb') as output_file:
+            output_file.write(nonce + aad + ciphertext)  # 写入 nonce、时间戳（AAD）和密文
+        return f"Encrypted: {input_file_path}"  # 返回加密完成的信息
+    except Exception as e:
+        return f"Error encrypting {input_file_path}: {str(e)}"  # 错误处理
 
-    return f"Encrypted file saved as {output_file_path}"
-# 解密单个文件
-def decrypt_file(input_file_path, output_file_path, aes_key):
-    with open(input_file_path, 'rb') as input_file:
-        # 读取 nonce
-        nonce = input_file.read(12)
-        # 初始化 AES 解密器
-        cipher = Cipher(algorithms.AES(aes_key), modes.GCM(nonce), backend=default_backend())
-        decryptor = cipher.decryptor()
-        with open(output_file_path, 'wb') as output_file:
-            # 读取并解密文件内容
-            while chunk := input_file.read(4096 + 16):  # GCM 的 tag 长度是 16 字节
-                if len(chunk) < 16:
-                    # 如果剩余的数据小于 tag 长度，直接跳出
-                    break
-                ciphertext = chunk[:-16]  # 去掉 tag 部分
-                output_file.write(decryptor.update(ciphertext))
-            # 获取并验证 tag
-            tag = chunk[-16:]  # 取出最后的 16 字节作为 tag
-            decryptor.finalize_with_tag(tag)
-    return f"Decrypted file saved as {output_file_path}"
-# 批量加密
-def encrypt_directory(input_dir, output_dir, aes_key):
-    # 遍历目录及其子目录，生成文件列表
-    files_to_encrypt = []
-    for root, dirs, files in os.walk(input_dir):
+# 解密文件
+def decrypt_file(input_file_path, aes_key):
+    try:
+        # 创建 AESGCM 解密对象
+        aesgcm = AESGCM(aes_key)
+        
+        # 读取文件内容：首先读取 nonce 和 AAD，再读取密文部分
+        with open(input_file_path, 'rb') as input_file:
+            nonce = input_file.read(12)  # 读取 12 字节的 nonce
+            aad = input_file.read(10)  # 读取 10 字节的时间戳（AAD）
+            print(aad)
+            ciphertext = input_file.read()  # 读取剩余的密文数据
+        # 使用读取到的 nonce 和 AAD 解密密文
+        decrypted_data = aesgcm.decrypt(nonce, ciphertext, aad)  # 解密过程
+        # 将解密后的数据直接覆盖到原文件中
+        with open(input_file_path, 'wb') as output_file:
+            output_file.write(decrypted_data)  # 写入解密后的数据
+        return f"Decrypted: {input_file_path}"  # 返回解密完成的信息
+    except Exception as e:
+        return f"Error decrypting {input_file_path}: {str(e)}"  # 错误处理
+
+# 批量加密目录中的所有文件
+def encrypt_directory(input_dir, aes_key):
+    results = []  # 用于存储加密结果
+    for root, dirs, files in os.walk(input_dir):  # 遍历目录中的所有文件
         for file_name in files:
             input_file_path = os.path.join(root, file_name)
-            # 生成输出文件路径
-            relative_path = os.path.relpath(input_file_path, input_dir)
-            output_file_path = os.path.join(output_dir, relative_path)
-            files_to_encrypt.append((input_file_path, output_file_path))
-
-    # 使用 ThreadPoolExecutor 来并行处理文件
-    with ThreadPoolExecutor() as executor:
-        results = list(executor.map(lambda p: encrypt_file(p[0], p[1], aes_key), files_to_encrypt))
+            result = encrypt_file(input_file_path, aes_key)  # 加密每个文件
+            results.append(result)  # 将结果添加到结果列表中
     return results
-# 批量解密
-def decrypt_directory(input_dir, output_dir, aes_key):
-    # 遍历目录及其子目录，生成文件列表
-    files_to_decrypt = []
-    for root, dirs, files in os.walk(input_dir):
+
+# 批量解密目录中的所有文件
+def decrypt_directory(input_dir, aes_key):
+    results = []  # 用于存储解密结果
+    for root, dirs, files in os.walk(input_dir):  # 遍历目录中的所有文件
         for file_name in files:
             input_file_path = os.path.join(root, file_name)
-            # 生成输出文件路径
-            relative_path = os.path.relpath(input_file_path, input_dir)
-            output_file_path = os.path.join(output_dir, relative_path)
-            files_to_decrypt.append((input_file_path, output_file_path))
-    # 使用 ThreadPoolExecutor 来并行处理文件
-    with ThreadPoolExecutor() as executor:
-        results = list(executor.map(lambda p: decrypt_file(p[0], p[1], aes_key), files_to_decrypt))
+            result = decrypt_file(input_file_path, aes_key)  # 解密每个文件
+            results.append(result)  # 将结果添加到结果列表中
     return results
 # 交互式菜单
-def menu(stdscr):
-    # 清屏
-    stdscr.clear()
-    # 输入密码生成 AES 密钥
-    stdscr.addstr(0, 0, "AES Encryption & Decryption Tool")
-    stdscr.addstr(2, 0, "Enter your password to generate AES key: ")
-    stdscr.refresh()
-    password = stdscr.getstr().decode("utf-8")  # 获取用户输入的密码
-    # 生成 AES 密钥和盐值
-    aes_key, salt = generate_aes_key_from_password(password)
+def menu():
+    print("AES Encryption & Decryption Tool\n")
+    # 获取用户输入的密码，并使用密码生成 AES 密钥
+    password = input("Enter your password to generate AES key: ").strip()
+    aes_key, salt = generate_aes_key_from_password(password)  # 生成 AES 密钥
     while True:
-        stdscr.clear()
-        stdscr.addstr(4, 0, "1. Encrypt files in a directory")
-        stdscr.addstr(5, 0, "2. Decrypt files in a directory")
-        stdscr.addstr(6, 0, "3. Exit")
-        stdscr.addstr(8, 0, "Please choose an option (1/2/3): ")
-        stdscr.refresh()
-        choice = stdscr.getch()
-        if choice == ord('1'):
-            # 输入加密目录
-            stdscr.addstr(10, 0, "Enter directory to encrypt: ")
-            stdscr.refresh()
-            input_dir = stdscr.getstr().decode("utf-8")
-            # 输入输出目录
-            stdscr.addstr(11, 0, "Enter output directory for encrypted files: ")
-            stdscr.refresh()
-            output_dir = stdscr.getstr().decode("utf-8")
-            # 执行加密
-            results = encrypt_directory(input_dir, output_dir, aes_key)
+        print("\nPlease choose an option:")
+        print("1. Encrypt files in a directory")  # 加密文件
+        print("2. Decrypt files in a directory")  # 解密文件
+        print("3. Exit")  # 退出程序
+        # 获取用户选择
+        choice = input("Enter your choice (1/2/3): ").strip()
+        if choice == '1':
+            # 获取待加密目录路径，并对目录中的所有文件进行加密
+            input_dir = input("Enter directory to encrypt: ").strip()
+            results = encrypt_directory(input_dir, aes_key)
             for result in results:
-                stdscr.addstr(13, 0, result)
-                stdscr.refresh()
-        elif choice == ord('2'):
-            # 输入解密目录
-            stdscr.addstr(10, 0, "Enter directory to decrypt: ")
-            stdscr.refresh()
-            input_dir = stdscr.getstr().decode("utf-8")
-            # 输入输出目录
-            stdscr.addstr(11, 0, "Enter output directory for decrypted files: ")
-            stdscr.refresh()
-            output_dir = stdscr.getstr().decode("utf-8")
-            # 执行解密
-            results = decrypt_directory(input_dir, output_dir, aes_key)
+                print(result)  # 输出加密结果
+        elif choice == '2':
+            # 获取待解密目录路径，并对目录中的所有文件进行解密
+            input_dir = input("Enter directory to decrypt: ").strip()
+            results = decrypt_directory(input_dir, aes_key)
             for result in results:
-                stdscr.addstr(13, 0, result)
-                stdscr.refresh()
-        elif choice == ord('3'):
-            break
-# 启动交互式菜单
-if __name__ == "__main__":
-    curses.wrapper(menu)
+                print(result)  # 输出解密结果
+        elif choice == '3':
+            print("Exiting...")  # 退出程序
+            break  # 退出循环，结束程序
+        
+        else:
+            print("Invalid choice. Please try again.")  # 输入无效时提示
+menu()  # 启动交互式菜单
